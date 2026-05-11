@@ -26,10 +26,10 @@ dependencies = [
 ]
 
 [project.scripts]
-ddd-train = "train:main"
-ddd-train-sft = "train_sft:main"
-ddd-eval = "evaluate:main"
-ddd-generate = "generate:main"
+LoopUS-train = "train:main"
+LoopUS-train-sft = "train_sft:main"
+LoopUS-eval = "evaluate:main"
+LoopUS-generate = "generate:main"
 
 [tool.setuptools]
 py-modules = [
