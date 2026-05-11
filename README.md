@@ -158,3 +158,7 @@ Both `evaluate.py` and `generate.py` use the same loading path through `utils/in
 ## License
 
 This project is released under the Apache 2.0 License. See `LICENSE` for details.
+
+## GPU Sponsorship
+
+We are always looking for GPU sponsorship. If you are interested, please contact pthpark1@pusan.ac.kr.
