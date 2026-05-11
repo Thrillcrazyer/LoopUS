@@ -161,4 +161,4 @@ This project is released under the Apache 2.0 License. See `LICENSE` for details
 
 ## GPU Sponsorship
 
-We are always looking for GPU sponsorship. If you are interested, please contact pthpark1@pusan.ac.kr.
+We are always looking for <strong><font color="#ff6b35">GPU sponsorship</font>. If you are interested, please contact.</strong> pthpark1@pusan.ac.kr
