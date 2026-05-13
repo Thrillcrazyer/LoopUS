@@ -15,7 +15,7 @@
 
 <sub><sup>*</sup> Corresponding author</sub>
 
-<!-- [![Paper](https://img.shields.io/badge/Paper-arXiv-red)](https://arxiv.org/pdf/2605.04461) -->
+[![Paper](https://img.shields.io/badge/Paper-arXiv-red)](https://arxiv.org/abs/2605.11011)
 [![Project Page](https://img.shields.io/badge/Project-Page-blue)](https://thrillcrazyer.github.io/LoopUS)
 [![Huggingface](https://img.shields.io/badge/HuggingFace-Model-orange?logo=huggingface)](https://huggingface.co/Thrillcrazyer/Qwen3_1.7B_LoopUS)
 
