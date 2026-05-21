@@ -162,3 +162,19 @@ This project is released under the Apache 2.0 License. See `LICENSE` for details
 ## GPU Sponsorship
 
 We are always looking for <strong><font color="#ff6b35">GPU sponsorship</font>. If you are interested, please contact.</strong> pthpark1@pusan.ac.kr
+
+# Citation
+
+If you find LoopUS useful in your research, please cite the following paper:
+
+```bibtex
+@misc{park2026loopus,
+      title={LoopUS: Recasting Pretrained LLMs into Looped Latent Refinement Models}, 
+      author={Taekhyun Park and Yongjae Lee and Dohee Kim and Hyerim Bae},
+      year={2026},
+      eprint={2605.11011},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2605.11011}, 
+}
+```
