@@ -169,12 +169,13 @@ If you find LoopUS useful in your research, please cite the following paper:
 
 ```bibtex
 @misc{park2026loopus,
-      title={LoopUS: Recasting Pretrained LLMs into Looped Latent Refinement Models}, 
-      author={Taekhyun Park and Yongjae Lee and Dohee Kim and Hyerim Bae},
-      year={2026},
-      eprint={2605.11011},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL},
-      url={https://arxiv.org/abs/2605.11011}, 
+  title        = {LoopUS: Recasting Pretrained LLMs into Looped Latent Refinement Models},
+  author       = {Taekhyun Park and Yongjae Lee and Dohee Kim and Hyerim Bae},
+  year         = {2026},
+  eprint       = {2605.11011},
+  archivePrefix= {arXiv},
+  primaryClass = {cs.LG},
+  doi          = {10.48550/arXiv.2605.11011},
+  url          = {https://arxiv.org/abs/2605.11011}
 }
 ```
