@@ -28,12 +28,12 @@ dependencies = [
 [project.scripts]
 LoopUS-train = "train:main"
 LoopUS-train-sft = "train_sft:main"
-LoopUS-eval = "evaluate:main"
+LoopUS-eval = "run_eval:main"
 LoopUS-generate = "generate:main"
 
 [tool.setuptools]
 py-modules = [
-    "evaluate",
+    "run_eval",
     "generate",
     "train",
     "train_sft",

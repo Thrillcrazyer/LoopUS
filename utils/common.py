@@ -92,6 +92,8 @@ class TrainConfig:
     q_stop_mode: str = "all"
     beta: float = 1.0
     gamma: float = 1.0
+    noise_std: float = 0.0
+    init_noise_std: float = 0.0
     save_interval: int = 1000
     max_checkpoints: int = 3
     checkpoint_dir: str = "checkpoints"
@@ -158,6 +160,10 @@ class TrainConfig:
             raise ValueError("beta must be >= 0")
         if self.gamma < 0:
             raise ValueError("gamma must be >= 0")
+        if self.noise_std < 0:
+            raise ValueError("noise_std must be >= 0")
+        if self.init_noise_std < 0:
+            raise ValueError("init_noise_std must be >= 0")
         if self.t_recursion < 1:
             raise ValueError("t_recursion must be >= 1")
         if self.n_supervision > self.n_reasoning_steps:
@@ -194,6 +200,8 @@ class TrainConfig:
             q_stop_mode=args.q_stop_mode,
             beta=getattr(args, "beta", 1.0),
             gamma=getattr(args, "gamma", 1.0),
+            noise_std=getattr(args, "noise_std", 0.0),
+            init_noise_std=getattr(args, "init_noise_std", 0.0),
             save_interval=args.save_interval,
             max_checkpoints=args.max_checkpoints,
             checkpoint_dir=args.checkpoint_dir,

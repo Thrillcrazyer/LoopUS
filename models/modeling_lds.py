@@ -323,8 +323,11 @@ class SelectiveGate(nn.Module):
 
     def __init__(self, hidden_size: int, dt_rank: Optional[int] = None,
                  dt_min: float = 0.001, dt_max: float = 0.1, dt_scale: float = 1.0,
-                 dt_init_floor: float = 1e-4):
+                 dt_init_floor: float = 1e-4, noise_std: float = 0.0):
         super().__init__()
+
+        # Scaled by the per-token hidden RMS so the same value transfers across models.
+        self.noise_std = noise_std
 
         # Low-rank delta projection (as in Mamba)
         if dt_rank is None:
@@ -365,6 +368,9 @@ class SelectiveGate(nn.Module):
         A = -torch.exp(self.A_log)                         # always negative
         A_bar = torch.exp(delta * A)                       # ∈ (0, 1)
         out = A_bar * h_new + (1 - A_bar) * h_old
+        if self.training and self.noise_std > 0:
+            rms = h_old.pow(2).mean(dim=-1, keepdim=True).sqrt()
+            out = out + self.noise_std * rms * torch.randn_like(out)    # Noise Injection in EqR
         return out.to(orig_dtype)
 
 class ReasoningBlock(nn.Module):

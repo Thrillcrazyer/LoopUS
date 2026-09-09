@@ -129,7 +129,7 @@ The public inference path supports three checkpoint sources:
 2. a Hugging Face Hub repository containing saved LoopUS weights
 3. a legacy training checkpoint directory containing `combined_model.pt`
 
-Both `evaluate.py` and `generate.py` use the same loading path through `utils/inference.py`, so evaluation and qualitative sampling follow identical checkpoint semantics.
+Both `run_eval.py` and `generate.py` use the same loading path through `utils/inference.py`, so evaluation and qualitative sampling follow identical checkpoint semantics.
 
 ## Reproducibility
 
@@ -145,7 +145,7 @@ Both `evaluate.py` and `generate.py` use the same loading path through `utils/in
 .
 ├── train.py
 ├── train_sft.py
-├── evaluate.py
+├── run_eval.py
 ├── generate.py
 ├── training_cli.py
 ├── training_runtime.py

@@ -93,6 +93,24 @@ def build_train_arg_parser(defaults: TrainCliDefaults) -> argparse.ArgumentParse
         help="Weight for the hidden-state/gradient alignment penalty",
     )
     parser.add_argument(
+        "--noise-std",
+        type=float,
+        default=0.0,
+        help=(
+            "Per-step latent noise injected during training, as a fraction of the "
+            "hidden state RMS (0 to disable)"
+        ),
+    )
+    parser.add_argument(
+        "--init-noise-std",
+        type=float,
+        default=0.0,
+        help=(
+            "Noise added to the encoder output before recursion, as a fraction of the "
+            "hidden state RMS (0 to disable)"
+        ),
+    )
+    parser.add_argument(
         "--save-interval",
         type=int,
         default=1000,

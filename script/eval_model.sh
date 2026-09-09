@@ -18,7 +18,7 @@ OUTPUT_JSON="results/eval.json"
 mkdir -p "$(dirname "$OUTPUT_JSON")"
 
 CMD=(
-    uv run evaluate.py
+    uv run run_eval.py
     --model-name "$MODEL_NAME"
     --tasks "$TASKS"
     --n-recursion "$N_RECURSION"

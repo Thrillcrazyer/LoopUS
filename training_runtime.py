@@ -381,6 +381,7 @@ def _setup_training(
     """Create optimizer/scheduler state and prepare distributed components."""
     combined_model.train()
     combined_model.gradient_checkpointing = True
+    combined_model.reasoning.gate.noise_std = cfg.noise_std
 
     optimizer = torch.optim.AdamW(list(combined_model.parameters()), lr=cfg.learning_rate)
 
@@ -456,6 +457,16 @@ def _setup_training(
         start_epoch=start_epoch,
         start_step=start_step,
     )
+
+
+def _perturb_initial_state(hidden_states: torch.Tensor, cfg: TrainConfig) -> torch.Tensor:
+    """Randomize z_0 so each trajectory starts in a different basin.
+    Randomized state initialization (RI) in EqR
+    """
+    if cfg.init_noise_std <= 0:
+        return hidden_states
+    rms = hidden_states.pow(2).mean(dim=-1, keepdim=True).sqrt()
+    return hidden_states + cfg.init_noise_std * rms * torch.randn_like(hidden_states)
 
 
 def _compute_supervision_loss(
@@ -823,6 +834,9 @@ def _collect_reasoning_step_losses(
     n_reasoning_steps: int,
 ) -> list[dict[str, float]]:
     """Collect diagnostic losses for every reasoning step on the current batch."""
+    # Measure the deterministic map: injected noise would masquerade as residual.
+    was_training = combined_model.training
+    combined_model.eval()
     with accelerator.autocast():
         hidden_states, position_embeddings, position_ids, cache_position, _ = combined_model.encoder(
             input_ids=input_ids,
@@ -899,6 +913,8 @@ def _collect_reasoning_step_losses(
         )
         hidden_states = hidden_states.detach()
 
+    if was_training:
+        combined_model.train()
     return step_metrics
 
 
@@ -1274,6 +1290,7 @@ def train_with_deep_supervision(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
                     )
+                    hidden_states = _perturb_initial_state(hidden_states, cfg)
 
                 plateau_kwargs = combined_model._reasoning_kwargs(
                     position_embeddings,
