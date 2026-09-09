@@ -837,10 +837,28 @@ def _collect_reasoning_step_losses(
         hidden_states=hidden_states,
     )
 
+    token_mask = attention_mask
+    if token_mask is not None:
+        if token_mask.dim() == 4:
+            token_mask = token_mask[:, 0, 0, :]
+        token_mask = (token_mask != 0).to(device=hidden_states.device, dtype=torch.float32)
+
     step_metrics: list[dict[str, float]] = []
     for step_index in range(n_reasoning_steps):
         hidden_states_old = hidden_states.detach()
         hidden_states, q_logit = combined_model.run_final_with_q(hidden_states_old, **plateau_kwargs)
+
+        delta_norm = (hidden_states - hidden_states_old).float().norm(dim=-1)
+        state_norm = hidden_states_old.float().norm(dim=-1).clamp(min=1e-6)
+        if token_mask is not None:
+            denom = token_mask.sum().clamp(min=1.0)
+            residual = (delta_norm * token_mask).sum() / denom
+            residual_rel = ((delta_norm / state_norm) * token_mask).sum() / denom
+            state_norm_mean = (state_norm * token_mask).sum() / denom
+        else:
+            residual = delta_norm.mean()
+            residual_rel = (delta_norm / state_norm).mean()
+            state_norm_mean = state_norm.mean()
 
         logits_old = combined_model.decoder(hidden_states=hidden_states_old, **plateau_kwargs)
         logits = combined_model.decoder(hidden_states=hidden_states, **plateau_kwargs)
@@ -874,6 +892,9 @@ def _collect_reasoning_step_losses(
                 "mono_loss": loss_mono.item(),
                 "token_acc": token_acc,
                 "q_hat": torch.sigmoid(q_logit).mean().item(),
+                "residual": residual.item(),
+                "residual_rel": residual_rel.item(),
+                "state_norm": state_norm_mean.item(),
             }
         )
         hidden_states = hidden_states.detach()
@@ -914,6 +935,9 @@ def _build_train_log_record(
             record[f"mono_loss_step{step}"] = step_metrics["mono_loss"]
             record[f"token_acc_step{step}"] = step_metrics["token_acc"]
             record[f"q_hat_step{step}"] = step_metrics["q_hat"]
+            record[f"residual_step{step}"] = step_metrics["residual"]
+            record[f"residual_rel_step{step}"] = step_metrics["residual_rel"]
+            record[f"state_norm_step{step}"] = step_metrics["state_norm"]
     return record
 
 
@@ -927,6 +951,24 @@ def _format_reasoning_step_log(
         f"step{int(step_metrics['step'])}={step_metrics[key]:.4f}"
         for step_metrics in reasoning_step_losses
     )
+
+
+CURVE_METRICS = ("residual", "residual_rel", "state_norm", "lm_loss", "token_acc")
+
+
+def _build_reasoning_curve_charts(reasoning_step_losses: list[dict[str, float]]) -> dict:
+    """Build W&B line charts plotted against reasoning step instead of train step."""
+    steps = [int(step_metrics["step"]) for step_metrics in reasoning_step_losses]
+    charts = {}
+    for key in CURVE_METRICS:
+        charts[f"train/curves/{key}_vs_reasoning_step"] = wandb.plot.line_series(
+            xs=steps,
+            ys=[[step_metrics[key] for step_metrics in reasoning_step_losses]],
+            keys=[key],
+            title=f"{key} vs reasoning step",
+            xname="reasoning_step",
+        )
+    return charts
 
 
 def _build_wandb_train_record(record: dict[str, float | int]) -> dict[str, float | int]:
@@ -943,6 +985,9 @@ def _build_wandb_train_record(record: dict[str, float | int]) -> dict[str, float
             "mono_loss_step",
             "token_acc_step",
             "q_hat_step",
+            "residual_step",
+            "residual_rel_step",
+            "state_norm_step",
         )):
             metric_name, _, step_suffix = key.rpartition("_step")
             wandb_record[f"train/reasoning_steps/step_{step_suffix}/{metric_name}"] = value
@@ -1007,12 +1052,16 @@ def _log_training_progress(
         print(_format_reasoning_step_log(reasoning_step_losses, "lm_loss", f"[train][step {global_step}] reasoning lm: "))
         print(_format_reasoning_step_log(reasoning_step_losses, "q_loss", f"[train][step {global_step}] reasoning q: "))
         print(_format_reasoning_step_log(reasoning_step_losses, "mono_loss", f"[train][step {global_step}] reasoning mono: "))
+        print(_format_reasoning_step_log(reasoning_step_losses, "residual", f"[train][step {global_step}] reasoning residual: "))
+        print(_format_reasoning_step_log(reasoning_step_losses, "residual_rel", f"[train][step {global_step}] reasoning residual_rel: "))
 
     if cfg.train_jsonl_path:
         append_jsonl(cfg.train_jsonl_path, record)
 
     if cfg.wandb_enabled:
         wandb_record = _build_wandb_train_record(record)
+        if reasoning_step_losses:
+            wandb_record.update(_build_reasoning_curve_charts(reasoning_step_losses))
         wandb.log(wandb_record, step=global_step)
 
     running.reset()
