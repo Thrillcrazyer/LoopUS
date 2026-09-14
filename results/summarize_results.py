@@ -46,6 +46,7 @@ def collect_files(paths: list[str] | None) -> list[Path]:
             files.extend(sorted(path.glob("*.json")))
         elif path.is_file():
             files.append(path)
+    print(files)    # debug
     return files
 
 

@@ -290,6 +290,8 @@ def prepare_model(
     decoder_layers: list[int] | None = None,
     n_reasoning_steps: int = 100,
     from_hub: str = "",
+    lma_window: int = 0,
+    lma_heads: int = 8,
 ) -> LDSForCausalLM:
     """Load a pretrained model and decompose it into encoder / reasoning / decoder."""
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
@@ -299,6 +301,8 @@ def prepare_model(
         return LDSForCausalLM.from_pretrained(
             from_hub,
             torch_dtype=dtype,
+            lma_window=lma_window,
+            lma_heads=lma_heads,
         )
 
     base_config_dict = AutoConfig.from_pretrained(model_name).to_dict()
@@ -309,6 +313,8 @@ def prepare_model(
         encoder_layer_indices=encoder_layers,
         decoder_layer_indices=decoder_layers,
         N=n_reasoning_steps,
+        lma_window=lma_window,
+        lma_heads=lma_heads,
     )
 
     return LDSForCausalLM.from_pretrained(
@@ -475,10 +481,13 @@ def _compute_supervision_loss(
     labels: torch.Tensor,
     cfg: TrainConfig,
     plateau_kwargs: dict,
+    loop_memory: list[torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Run a supervised reasoning step and return all tracked loss components."""
     hidden_states_old = hidden_states.detach()
-    hidden_states, q_logit = combined_model.run_final_with_q(hidden_states_old, **plateau_kwargs)
+    hidden_states, q_logit = combined_model.run_final_with_q(
+        hidden_states_old, loop_memory=loop_memory, **plateau_kwargs
+    )
     q_hat = torch.sigmoid(q_logit)
 
     logits = combined_model.decoder(hidden_states=hidden_states, **plateau_kwargs)
@@ -738,8 +747,11 @@ def evaluate(
             hidden_states=hidden_states,
         )
 
+        loop_memory = combined_model.new_loop_memory()
         for n_step in range(n_supervision):
-            hidden_states, q_logit = combined_model.run_final_with_q(hidden_states, **kwargs)
+            hidden_states, q_logit = combined_model.run_final_with_q(
+                hidden_states, loop_memory=loop_memory, **kwargs
+            )
             logits = combined_model.decoder(hidden_states=hidden_states, **kwargs)
 
             shift_logits = logits[:, :-1, :].contiguous()
@@ -858,9 +870,12 @@ def _collect_reasoning_step_losses(
         token_mask = (token_mask != 0).to(device=hidden_states.device, dtype=torch.float32)
 
     step_metrics: list[dict[str, float]] = []
+    loop_memory = combined_model.new_loop_memory()
     for step_index in range(n_reasoning_steps):
         hidden_states_old = hidden_states.detach()
-        hidden_states, q_logit = combined_model.run_final_with_q(hidden_states_old, **plateau_kwargs)
+        hidden_states, q_logit = combined_model.run_final_with_q(
+            hidden_states_old, loop_memory=loop_memory, **plateau_kwargs
+        )
 
         delta_norm = (hidden_states - hidden_states_old).float().norm(dim=-1)
         state_norm = hidden_states_old.float().norm(dim=-1).clamp(min=1e-6)
@@ -1307,6 +1322,7 @@ def train_with_deep_supervision(
                 
                 
                 sup_idx = 0
+                loop_memory = combined_model.new_loop_memory()
 
                 for n_step in range(cfg.n_reasoning_steps):
                     if n_step in supervised_set:
@@ -1317,6 +1333,7 @@ def train_with_deep_supervision(
                                 labels=labels,
                                 cfg=cfg,
                                 plateau_kwargs=plateau_kwargs,
+                                loop_memory=loop_memory,
                             )
 
                             accelerator.backward(loss)
@@ -1357,6 +1374,7 @@ def train_with_deep_supervision(
                         with torch.no_grad():
                             hidden_states = combined_model.reasoning(
                                 hidden_states=hidden_states,
+                                loop_memory=loop_memory,
                                 **plateau_kwargs,
                             )
                             hidden_states = hidden_states.detach()
@@ -1427,6 +1445,8 @@ def run_training_entrypoint(
         decoder_layers=cfg.decoder_layers,
         n_reasoning_steps=cfg.n_reasoning_steps,
         from_hub=cfg.from_hub,
+        lma_window=cfg.lma_window,
+        lma_heads=cfg.lma_heads,
     )
     combined_model = combined_model.to(accelerator.device)
 

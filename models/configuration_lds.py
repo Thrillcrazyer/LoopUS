@@ -49,10 +49,14 @@ class LDSConfig(PretrainedConfig):
         q_eval_interval: int = 1,
         halting_strategy: str = "threshold",
         convergence_epsilon: float = 1e-2,
+        lma_window: int = 0,
+        lma_heads: int = 8,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.base_model_name_or_path = base_model_name_or_path
+        self.lma_window = lma_window
+        self.lma_heads = lma_heads
 
         # Resolve base config ------------------------------------------------
         if base_config_dict is not None:

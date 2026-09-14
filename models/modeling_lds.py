@@ -39,6 +39,30 @@ def _remap_state_dict_keys(state_dict: dict[str, torch.Tensor]) -> dict[str, tor
         out[new_key] = value
     return out
 
+def _load_state_dict_reporting_gaps(
+    module: nn.Module,
+    state_dict: dict[str, torch.Tensor],
+    *,
+    source: str,
+) -> None:
+    """Load weights non-strictly, naming anything left randomly initialised.
+
+    Modules added after a checkpoint was written (e.g. Loop Memory Attention)
+    are absent from it, so a strict load would reject the whole file.
+    """
+    incompatible = module.load_state_dict(state_dict, strict=False)
+    if incompatible.missing_keys:
+        print(
+            f"[checkpoint] {len(incompatible.missing_keys)} parameter(s) not in "
+            f"{source}, left at initialisation: {sorted(incompatible.missing_keys)}"
+        )
+    if incompatible.unexpected_keys:
+        print(
+            f"[checkpoint] {len(incompatible.unexpected_keys)} unused key(s) in "
+            f"{source}: {sorted(incompatible.unexpected_keys)}"
+        )
+
+
 def _normalize_attention_mask(
     attention_mask: Optional[torch.Tensor],
     hidden_states: Optional[torch.Tensor] = None,
@@ -373,6 +397,92 @@ class SelectiveGate(nn.Module):
             out = out + self.noise_std * rms * torch.randn_like(out)    # Noise Injection in EqR
         return out.to(orig_dtype)
 
+def _rms_normalize(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
+
+
+class LoopMemoryAttention(nn.Module):
+    """Loop Memory Attention over the block's own past loop states.
+
+    Implements RecurTrace eq. 4-5::
+
+        A_{i,j} = softmax_j( Q_i^T K_{i,j} / sqrt(d_h) - beta_h (t - t_j) )
+        LMA(q, X) = gamma * g (*) ( [sum_j A_{i,j} V_{i,j}]_i W_o )
+
+    Attention runs independently per token position ``i`` over the ``window``
+    most recent loop states ``j``, so no information mixes across positions.
+    ``beta_h`` is a learnable per-head slope over *loop* distance, held
+    positive via ``exp`` and initialised to ALiBi values. ``gamma`` starts at
+    zero so an untrained module is an exact no-op.
+    """
+
+    def __init__(self, hidden_size: int, num_heads: int = 8, window: int = 3):
+        super().__init__()
+        if window < 1:
+            raise ValueError("window must be >= 1")
+        if hidden_size % num_heads != 0:
+            raise ValueError(
+                f"hidden_size ({hidden_size}) must be divisible by num_heads ({num_heads})"
+            )
+
+        self.num_heads = num_heads
+        self.head_dim = hidden_size // num_heads
+        self.window = window
+
+        self.q_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.k_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.v_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.o_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.gate_proj = nn.Linear(2 * hidden_size, hidden_size, bias=True)
+
+        slopes = torch.tensor(
+            [2.0 ** (-8.0 * (head + 1) / num_heads) for head in range(num_heads)]
+        )
+        self.log_beta = nn.Parameter(slopes.log())
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    def forward(self, query_state: torch.Tensor, memory: list[torch.Tensor]) -> torch.Tensor:
+        orig_dtype = query_state.dtype
+        param_dtype = self.q_proj.weight.dtype
+        query_state = query_state.to(param_dtype)
+
+        entries = memory[-self.window:]
+        memory_states = torch.stack([m.to(param_dtype) for m in entries], dim=2)
+
+        batch, seq_len, num_entries, _ = memory_states.shape
+        head_shape = (batch, seq_len, self.num_heads, self.head_dim)
+        memory_head_shape = (batch, seq_len, num_entries, self.num_heads, self.head_dim)
+
+        q = self.q_proj(_rms_normalize(query_state)).view(head_shape)
+        normalized_memory = _rms_normalize(memory_states)
+        k = self.k_proj(normalized_memory).view(memory_head_shape)
+        v = self.v_proj(memory_states).view(memory_head_shape)
+
+        # QK-norm keeps logits bounded as the loop state grows in magnitude.
+        q = _rms_normalize(q)
+        k = _rms_normalize(k)
+
+        scores = torch.einsum("bthd,btlhd->bthl", q, k).float() / math.sqrt(self.head_dim)
+
+        # Oldest entry is t - num_entries, newest is t - 1.
+        loop_distance = torch.arange(
+            num_entries, 0, -1, device=scores.device, dtype=torch.float32
+        )
+        beta = torch.exp(self.log_beta.float())
+        scores = scores - beta[:, None] * loop_distance[None, :]
+
+        attn = torch.softmax(scores, dim=-1).to(param_dtype)
+        pooled = torch.einsum("bthl,btlhd->bthd", attn, v).reshape(
+            batch, seq_len, self.num_heads * self.head_dim
+        )
+        out = self.o_proj(pooled)
+
+        gate = torch.sigmoid(
+            self.gate_proj(torch.cat([query_state, memory_states.mean(dim=2)], dim=-1))
+        )
+        return (self.gamma.to(param_dtype) * gate * out).to(orig_dtype)
+
+
 class ReasoningBlock(nn.Module):
     """Reasoning Block: configurable middle transformer layers.
 
@@ -380,9 +490,12 @@ class ReasoningBlock(nn.Module):
         config: The base model's ``PretrainedConfig``.
         layer_indices: List of layer indices included in this block.
         layers: Pre-extracted transformer layers (in order).
+        lma_window: Loop-memory window; 0 disables Loop Memory Attention.
+        lma_heads: Number of Loop Memory Attention heads.
     """
     def __init__(self, config, layer_indices: list[int],
-                 layers: list[nn.Module]):
+                 layers: list[nn.Module], lma_window: int = 0,
+                 lma_heads: int = 8):
         super().__init__()
         self.config = config
         self.layer_indices = sorted(layer_indices)
@@ -391,8 +504,12 @@ class ReasoningBlock(nn.Module):
         # Mamba-style selective state mixer for x_init re-injection
         hidden_size = config.hidden_size
         self.gate = SelectiveGate(hidden_size)
+        self.lma = (
+            LoopMemoryAttention(hidden_size, num_heads=lma_heads, window=lma_window)
+            if lma_window > 0 else None
+        )
         self.gradient_checkpointing = False
- 
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -403,8 +520,20 @@ class ReasoningBlock(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Cache] = None,
         use_cache: bool = False,
+        loop_memory: Optional[list[torch.Tensor]] = None,
     ):
         hidden_old = hidden_states
+
+        # RecurTrace eq. 2: h <- h + LMA(x^(t-1), M^(t)) before the layers run.
+        # ``loop_memory`` is appended to in place, so callers only need to hand
+        # the same list to every iteration of one trajectory.
+        if self.lma is not None and loop_memory is not None:
+            hidden_states = hidden_states + self.lma(
+                hidden_states, loop_memory + [hidden_states]
+            )
+            loop_memory.append(hidden_old.detach())
+            del loop_memory[:-self.lma.window]
+
         attention_mask_mapping = _build_attention_mask_mapping(
             self.config,
             hidden_states,
@@ -667,6 +796,8 @@ class LDSForCausalLM(nn.Module, GenerationMixin):
             config=base_cfg,
             layer_indices=rea_indices,
             layers=[inner.layers[i] for i in rea_indices],
+            lma_window=getattr(config, "lma_window", 0),
+            lma_heads=getattr(config, "lma_heads", 8),
         )
         self.decoder = DecoderBlock(
             config=base_cfg,
@@ -757,6 +888,13 @@ class LDSForCausalLM(nn.Module, GenerationMixin):
         torch_dtype = kwargs.pop("torch_dtype", None)
         device_map = kwargs.pop("device_map", None)
         max_memory = kwargs.pop("max_memory", None)
+        # Loop Memory Attention can be switched on for a checkpoint saved without it.
+        lma_window = kwargs.pop("lma_window", None)
+        lma_heads = kwargs.pop("lma_heads", None)
+        if lma_window is not None:
+            config.lma_window = lma_window
+        if lma_heads is not None:
+            config.lma_heads = lma_heads
         # Consume remaining kwargs to avoid unexpected keyword errors
         kwargs.pop("attn_implementation", None)
 
@@ -772,7 +910,7 @@ class LDSForCausalLM(nn.Module, GenerationMixin):
 
         cleaned = {k.replace(".module.", "."): v for k, v in state_dict.items()}
         cleaned = _remap_state_dict_keys(cleaned)
-        model.load_state_dict(cleaned)
+        _load_state_dict_reporting_gaps(model, cleaned, source=local_dir)
 
         if tokenizer is None:
             tokenizer = AutoTokenizer.from_pretrained(local_dir)
@@ -926,9 +1064,14 @@ class LDSForCausalLM(nn.Module, GenerationMixin):
             ),
         }
 
+    def new_loop_memory(self) -> Optional[list[torch.Tensor]]:
+        """Create a fresh Loop Memory Attention buffer for one trajectory."""
+        return [] if self.reasoning.lma is not None else None
+
     def run_outer_no_q(
         self,
         hidden_states: torch.Tensor,
+        loop_memory: Optional[list[torch.Tensor]] = None,
         **kwargs,
     ) -> torch.Tensor:
         """Run *t_steps* outer iterations, each with *n_latent* plateau calls.
@@ -936,13 +1079,16 @@ class LDSForCausalLM(nn.Module, GenerationMixin):
         No Q-head evaluation is performed — this is the "cheap" recursion used
         for the first ``T − 1`` outer steps.
         """
-        hidden_states = self.reasoning(hidden_states=hidden_states, **kwargs)
-        
+        hidden_states = self.reasoning(
+            hidden_states=hidden_states, loop_memory=loop_memory, **kwargs
+        )
+
         return hidden_states
 
     def run_final_with_q(
         self,
         hidden_states: torch.Tensor,
+        loop_memory: Optional[list[torch.Tensor]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run the last outer step: ``n_latent − 1`` plateau calls followed by
@@ -950,20 +1096,23 @@ class LDSForCausalLM(nn.Module, GenerationMixin):
 
         Returns ``(hidden_states, q_logit)``.
         """
-        hidden_states = self.reasoning(hidden_states=hidden_states, **kwargs)
-        
+        hidden_states = self.reasoning(
+            hidden_states=hidden_states, loop_memory=loop_memory, **kwargs
+        )
+
         hidden_states, q_logit = self.reasoning(
             hidden_states=hidden_states,
             q_head=self.q_head,
+            loop_memory=loop_memory,
             **kwargs,
         )
-        
+
         return hidden_states, q_logit
 
     def run_recursion(
         self,
         hidden_states: torch.Tensor,
-
+        loop_memory: Optional[list[torch.Tensor]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run one full supervision step: ``T`` outer iterations of recursion.
@@ -973,8 +1122,8 @@ class LDSForCausalLM(nn.Module, GenerationMixin):
 
         Returns ``(hidden_states, q_logit)``.
         """
-        hidden_states = self.run_outer_no_q(hidden_states, **kwargs)
-        return self.run_final_with_q(hidden_states, **kwargs)
+        hidden_states = self.run_outer_no_q(hidden_states, loop_memory=loop_memory, **kwargs)
+        return self.run_final_with_q(hidden_states, loop_memory=loop_memory, **kwargs)
 
     # ------------------------------------------------------------------
     # Properties required by GenerationMixin
@@ -1072,6 +1221,7 @@ class LDSForCausalLM(nn.Module, GenerationMixin):
             # dense batch/time layout, so some samples cannot stop advancing without
             # introducing per-sample cache length skew.
             samplewise_halting = not use_cache
+            loop_memory = self.new_loop_memory()
             active_mask = torch.ones(hidden_states.size(0), dtype=torch.bool, device=hidden_states.device)
             cached_first_halt_mask = torch.zeros(hidden_states.size(0), dtype=torch.bool, device=hidden_states.device)
             cached_first_halt_hidden_states = hidden_states
@@ -1093,6 +1243,7 @@ class LDSForCausalLM(nn.Module, GenerationMixin):
                     hidden_states=hidden_states,
                     past_key_values=past_key_values["reasoning"][recursion_idx] if past_key_values is not None else None,
                     use_cache=use_cache,
+                    loop_memory=loop_memory,
                     **reasoning_kwargs,
                 )
                 if use_cache:
@@ -1326,7 +1477,7 @@ class LDSForCausalLM(nn.Module, GenerationMixin):
         cleaned = {k.replace(".module.", "."): v for k, v in state_dict.items()}
         # Backward-compat: remap old key prefixes → current names
         cleaned = _remap_state_dict_keys(cleaned)
-        self.load_state_dict(cleaned)
+        _load_state_dict_reporting_gaps(self, cleaned, source=checkpoint_path)
 
         if optimizer is not None:
             opt_path = os.path.join(checkpoint_path, "optimizer.pt")

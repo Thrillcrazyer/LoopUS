@@ -94,6 +94,8 @@ class TrainConfig:
     gamma: float = 1.0
     noise_std: float = 0.0
     init_noise_std: float = 0.0
+    lma_window: int = 0
+    lma_heads: int = 8
     save_interval: int = 1000
     max_checkpoints: int = 3
     checkpoint_dir: str = "checkpoints"
@@ -164,6 +166,10 @@ class TrainConfig:
             raise ValueError("noise_std must be >= 0")
         if self.init_noise_std < 0:
             raise ValueError("init_noise_std must be >= 0")
+        if self.lma_window < 0:
+            raise ValueError("lma_window must be >= 0")
+        if self.lma_heads < 1:
+            raise ValueError("lma_heads must be >= 1")
         if self.t_recursion < 1:
             raise ValueError("t_recursion must be >= 1")
         if self.n_supervision > self.n_reasoning_steps:
@@ -202,6 +208,8 @@ class TrainConfig:
             gamma=getattr(args, "gamma", 1.0),
             noise_std=getattr(args, "noise_std", 0.0),
             init_noise_std=getattr(args, "init_noise_std", 0.0),
+            lma_window=getattr(args, "lma_window", 0),
+            lma_heads=getattr(args, "lma_heads", 8),
             save_interval=args.save_interval,
             max_checkpoints=args.max_checkpoints,
             checkpoint_dir=args.checkpoint_dir,

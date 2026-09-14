@@ -111,6 +111,21 @@ def build_train_arg_parser(defaults: TrainCliDefaults) -> argparse.ArgumentParse
         ),
     )
     parser.add_argument(
+        "--lma-window",
+        type=int,
+        default=0,
+        help=(
+            "Loop Memory Attention window: attend over this many previous loop "
+            "states (0 disables LMA)"
+        ),
+    )
+    parser.add_argument(
+        "--lma-heads",
+        type=int,
+        default=8,
+        help="Number of Loop Memory Attention heads",
+    )
+    parser.add_argument(
         "--save-interval",
         type=int,
         default=1000,
