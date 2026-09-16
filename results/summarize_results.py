@@ -34,8 +34,45 @@ def parse_args():
                    help="Substring matching the row to compute the delta against (default: first row)")
     p.add_argument("--latex", action="store_true", help="Emit a booktabs LaTeX table")
     p.add_argument("--csv", default=None, help="Also write the table to this CSV path")
+    p.add_argument(
+        "--custom",
+        action="store_true",
+        help="Use the hardcoded order/labels in collect_files_custom() instead of scanning a directory",
+    )
     return p.parse_args()
 
+def collect_files_custom() -> tuple[list[Path], dict[Path, str]]:
+    """Hardcoded (file, setting) order — edit this dict to add/reorder rows."""
+    files2setting = {
+        "results/LoopUS.json": "LoopUS",
+        "results/LoopUS_NI0.0_RI0.0_44000.json": "NI0.0_RI0.0 (44k steps)",
+        "results/LoopUS_NI0.0_RI0.0_final.json": "NI0.0_RI0.0 (400M)",
+
+        "results/LoopUS_NI0.001_RI0.0.json": "NI0.001_RI0.0 (100M)",
+        "results/LoopUS_NI0.001_RI0.0_30000.json": "NI0.001_RI0.0 (30k steps)",
+        "results/LoopUS_NI0.001_RI0.0_cont_final.json": "NI0.001_RI0.0 (400M)",
+        "results/LoopUS_NI0.001_RI0.0_87000.json": "NI0.001_RI0.0 (87k steps)",
+        "results/LoopUS_NI0.001_RI0.0_1B.json": "NI0.001_RI0.0 (1B)",
+
+        "results/LoopUS_NI0.0_RI0.05.json": "NI0.0_RI0.05 (100M)",
+        "results/LoopUS_NI0.0_RI0.05_20000.json": "NI0.0_RI0.05 (20k steps)",
+        "results/LoopUS_NI0.0_RI0.05_cont_final.json": "NI0.0_RI0.05 (400M)",
+        # "results/LoopUS_NI0.0_RI0.05_.json": "NI0.0_RI0.05 (1B)",
+
+        "results/LoopUS_NI0.001_RI0.05_20000.json": "NI0.001_RI0.05 (20k steps)",
+        "results/LoopUS_NI0.001_RI0.05_46000.json": "NI0.001_RI0.05 (46k steps)",
+    }
+
+    repo_root = Path(__file__).resolve().parent.parent
+    files: list[Path] = []
+    overrides: dict[Path, str] = {}
+    for raw, setting in files2setting.items():
+        path = (repo_root / raw).resolve()
+        if not path.is_file():
+            raise SystemExit(f"[--custom] file not found: {path}")
+        files.append(path)
+        overrides[path] = setting
+    return files, overrides
 
 def collect_files(paths: list[str] | None) -> list[Path]:
     paths = paths or [str(Path(__file__).resolve().parent)]
@@ -46,7 +83,6 @@ def collect_files(paths: list[str] | None) -> list[Path]:
             files.extend(sorted(path.glob("*.json")))
         elif path.is_file():
             files.append(path)
-    print(files)    # debug
     return files
 
 
@@ -76,9 +112,11 @@ def lookup(data: dict, names: list[str], fields: list[str]) -> float | None:
     return None
 
 
-def build_row(path: Path, metric: str) -> dict:
+def build_row(path: Path, metric: str, setting_override: str | None = None) -> dict:
     data = json.load(open(path))
     model, setting = label_for(data, path)
+    if setting_override:
+        setting = setting_override
     row: dict = {"model": model, "setting": setting, "file": path.name}
 
     for col, names, fields in PPL_COLS:
@@ -193,11 +231,15 @@ def write_csv(rows: list[dict], path: str) -> None:
 
 def main() -> None:
     args = parse_args()
-    files = collect_files(args.results)
+    overrides: dict[Path, str] = {}
+    if args.custom:
+        files, overrides = collect_files_custom()
+    else:
+        files = collect_files(args.results)
     if not files:
         raise SystemExit("No eval JSON files found.")
 
-    rows = [build_row(path, args.metric) for path in files]
+    rows = [build_row(path, args.metric, overrides.get(path.resolve())) for path in files]
     common = add_averages(rows)
     add_deltas(rows, args.baseline)
 
