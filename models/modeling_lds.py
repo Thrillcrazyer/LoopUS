@@ -939,13 +939,10 @@ class LDSForCausalLM(nn.Module, GenerationMixin):
         hidden_states: torch.Tensor,
         **kwargs,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Run the last outer step: ``n_latent − 1`` plateau calls followed by
-        one call that also evaluates the Q-head.
+        """Run one reasoning step while also evaluating the Q-head.
 
         Returns ``(hidden_states, q_logit)``.
         """
-        hidden_states = self.reasoning(hidden_states=hidden_states, **kwargs)
-        
         hidden_states, q_logit = self.reasoning(
             hidden_states=hidden_states,
             q_head=self.q_head,
@@ -1612,5 +1609,3 @@ class LDSForCausalLM(nn.Module, GenerationMixin):
 
 
 __all__ = ["LDSForCausalLM", "_remap_state_dict_keys"]
-
-
