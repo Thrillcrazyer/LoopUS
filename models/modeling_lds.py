@@ -1089,24 +1089,29 @@ class LDSForCausalLM(nn.Module, GenerationMixin):
         self,
         hidden_states: torch.Tensor,
         loop_memory: Optional[list[torch.Tensor]] = None,
+        return_intermediate: bool = False,
         **kwargs,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, ...]:
         """Run the last outer step: ``n_latent − 1`` plateau calls followed by
         one call that also evaluates the Q-head.
 
-        Returns ``(hidden_states, q_logit)``.
+        Returns ``(hidden_states, q_logit)``, or ``(hidden_states, q_logit,
+        z_mid)`` with the output of the first reasoning call when
+        ``return_intermediate`` is set.
         """
-        hidden_states = self.reasoning(
+        z_mid = self.reasoning(
             hidden_states=hidden_states, loop_memory=loop_memory, **kwargs
         )
 
         hidden_states, q_logit = self.reasoning(
-            hidden_states=hidden_states,
+            hidden_states=z_mid,
             q_head=self.q_head,
             loop_memory=loop_memory,
             **kwargs,
         )
 
+        if return_intermediate:
+            return hidden_states, q_logit, z_mid
         return hidden_states, q_logit
 
     def run_recursion(

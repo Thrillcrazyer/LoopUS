@@ -92,6 +92,7 @@ class TrainConfig:
     q_stop_mode: str = "all"
     beta: float = 1.0
     gamma: float = 1.0
+    gamma_lat: float = 0.0
     noise_std: float = 0.0
     init_noise_std: float = 0.0
     lma_window: int = 0
@@ -162,6 +163,8 @@ class TrainConfig:
             raise ValueError("beta must be >= 0")
         if self.gamma < 0:
             raise ValueError("gamma must be >= 0")
+        if self.gamma_lat < 0:
+            raise ValueError("gamma_lat must be >= 0")
         if self.noise_std < 0:
             raise ValueError("noise_std must be >= 0")
         if self.init_noise_std < 0:
@@ -206,6 +209,7 @@ class TrainConfig:
             q_stop_mode=args.q_stop_mode,
             beta=getattr(args, "beta", 1.0),
             gamma=getattr(args, "gamma", 1.0),
+            gamma_lat=getattr(args, "gamma_lat", 0.0),
             noise_std=getattr(args, "noise_std", 0.0),
             init_noise_std=getattr(args, "init_noise_std", 0.0),
             lma_window=getattr(args, "lma_window", 0),

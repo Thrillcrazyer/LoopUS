@@ -48,6 +48,7 @@ def collect_files_custom() -> tuple[list[Path], dict[Path, str]]:
         "results/LoopUS_NI0.0_RI0.0_44000.json": "NI0.0_RI0.0 (44k steps)",
         "results/LoopUS_NI0.0_RI0.0_final.json": "NI0.0_RI0.0 (400M)",
         "results/LoopUS_NI0.0_RI0.0_62000.json": "NI0.0_RI0.0 (62k steps)",
+        "results/LoopUS_NI0.0_RI0.0_76000.json": "NI0.0_RI0.0 (76k steps)",
 
         "results/LoopUS_NI0.001_RI0.0.json": "NI0.001_RI0.0 (100M)",
         "results/LoopUS_NI0.001_RI0.0_30000.json": "NI0.001_RI0.0 (30k steps)",
@@ -59,10 +60,14 @@ def collect_files_custom() -> tuple[list[Path], dict[Path, str]]:
         "results/LoopUS_NI0.0_RI0.05_20000.json": "NI0.0_RI0.05 (20k steps)",
         "results/LoopUS_NI0.0_RI0.05_cont_final.json": "NI0.0_RI0.05 (400M)",
         "results/LoopUS_NI0.0_RI0.05_90000.json": "NI0.0_RI0.05 (90k steps)",
+        "results/LoopUS_NI0.0_RI0.05_105000.json": "NI0.0_RI0.05 (105k steps)",
 
         "results/LoopUS_NI0.001_RI0.05_20000.json": "NI0.001_RI0.05 (20k steps)",
         "results/LoopUS_NI0.001_RI0.05_46000.json": "NI0.001_RI0.05 (46k steps)",
         "results/LoopUS_NI0.001_RI0.05_65000.json": "NI0.001_RI0.05 (65k steps)",
+        "results/LoopUS_NI0.001_RI0.05_79000.json": "NI0.001_RI0.05 (79k steps)",
+
+        "results/LoopUS_LAT1.0_16000.json": "LAT1.0 (16k steps)",
     }
 
     repo_root = Path(__file__).resolve().parent.parent

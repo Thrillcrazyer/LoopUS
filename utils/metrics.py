@@ -153,7 +153,9 @@ class MetricsTracker:
         summary = tracker.summarize_and_reset()
     """
 
-    __slots__ = ("_loss", "_lm_loss", "_q_loss", "_token_acc", "_q_hat", "_steps")
+    __slots__ = (
+        "_loss", "_lm_loss", "_q_loss", "_lat_loss", "_token_acc", "_q_hat", "_steps"
+    )
 
     def __init__(self) -> None:
         self.reset()
@@ -164,6 +166,7 @@ class MetricsTracker:
         self._loss = 0.0
         self._lm_loss = 0.0
         self._q_loss = 0.0
+        self._lat_loss = 0.0
         self._token_acc = 0.0
         self._q_hat = 0.0
         self._steps = 0
@@ -175,10 +178,12 @@ class MetricsTracker:
         q_loss: float,
         token_acc: float,
         q_hat: float,
+        lat_loss: float = 0.0,
     ) -> None:
         self._loss += loss
         self._lm_loss += lm_loss
         self._q_loss += q_loss
+        self._lat_loss += lat_loss
         self._token_acc += token_acc
         self._q_hat += q_hat
         self._steps += 1
@@ -196,6 +201,7 @@ class MetricsTracker:
             "loss": self._loss / denom,
             "lm_loss": self._lm_loss / denom,
             "q_loss": self._q_loss / denom,
+            "lat_loss": self._lat_loss / denom,
             "token_acc": self._token_acc / denom,
             "q_hat": self._q_hat / denom,
         }

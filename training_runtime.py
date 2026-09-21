@@ -475,6 +475,40 @@ def _perturb_initial_state(hidden_states: torch.Tensor, cfg: TrainConfig) -> tor
     return hidden_states + cfg.init_noise_std * rms * torch.randn_like(hidden_states)
 
 
+def _latent_target_loss(
+    hidden_states_old: torch.Tensor,
+    z_mid: torch.Tensor,
+    latent_grad: torch.Tensor,
+    attention_mask: torch.Tensor | None,
+) -> torch.Tensor:
+    """Align one reasoning application with the descent direction on CE.
+    L_lat = || R(z) - (z - ∇_z CE(D(z),y)) ||^2
+    Args:
+        latent_grad: ∇_z CE(D(z),y)
+        
+    Direction only: the step magnitude spans ~8 orders across depth, so fitting
+    it makes the loss depth-dominated. Magnitude stays with the gate.
+    """
+    grad32 = latent_grad.float()
+    grad_norm = grad32.norm(dim=-1, keepdim=True)
+    ghat = -grad32 / grad_norm.clamp(min=1e-12)
+
+    delta = z_mid.float() - hidden_states_old.float()
+    delta_norm = delta.norm(dim=-1, keepdim=True)
+    step = delta / delta_norm.clamp(min=1e-12)
+
+    valid = (grad_norm.squeeze(-1) > 1e-8) & (delta_norm.squeeze(-1) > 1e-12)
+    if attention_mask is not None:
+        token_mask = attention_mask
+        if token_mask.dim() == 4:
+            token_mask = token_mask[:, 0, 0, :]
+        valid = valid & (token_mask != 0).to(device=valid.device)
+    valid = valid.float()
+
+    per_token = (step - ghat).pow(2).sum(dim=-1)
+    return (per_token * valid).sum() / valid.sum().clamp(min=1.0)
+
+
 def _compute_supervision_loss(
     combined_model: LDSForCausalLM,
     hidden_states: torch.Tensor,
@@ -482,27 +516,56 @@ def _compute_supervision_loss(
     cfg: TrainConfig,
     plateau_kwargs: dict,
     loop_memory: list[torch.Tensor] | None = None,
-) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, float]:
     """Run a supervised reasoning step and return all tracked loss components."""
+    use_latent_target = cfg.gamma_lat > 0
     hidden_states_old = hidden_states.detach()
-    hidden_states, q_logit = combined_model.run_final_with_q(
-        hidden_states_old, loop_memory=loop_memory, **plateau_kwargs
-    )
+    if use_latent_target:
+        hidden_states, q_logit, z_mid = combined_model.run_final_with_q(
+            hidden_states_old,
+            loop_memory=loop_memory,
+            return_intermediate=True,
+            **plateau_kwargs,
+        )
+    else:
+        hidden_states, q_logit = combined_model.run_final_with_q(
+            hidden_states_old, loop_memory=loop_memory, **plateau_kwargs
+        )
     q_hat = torch.sigmoid(q_logit)
 
     logits = combined_model.decoder(hidden_states=hidden_states, **plateau_kwargs)
     shift_logits = logits[:, :-1, :].contiguous()
     shift_labels = labels[:, 1:].contiguous()
 
-    with torch.no_grad():
-        logits_old = combined_model.decoder(hidden_states=hidden_states_old, **plateau_kwargs)
+    if use_latent_target:
+        z_leaf = hidden_states_old.clone().requires_grad_(True)
+        logits_old = combined_model.decoder(hidden_states=z_leaf, **plateau_kwargs)
         shift_logits_old = logits_old[:, :-1, :].contiguous()
-        lm_loss_prev = F.cross_entropy(
+        ce_prev = F.cross_entropy(
             shift_logits_old.view(-1, shift_logits_old.size(-1)),
             shift_labels.view(-1),
             ignore_index=-100,
         )
-    
+        (latent_grad,) = torch.autograd.grad(ce_prev, [z_leaf])
+        # Detached: loss_mono must not backprop into the decoder, and the graph
+        # behind ce_prev is already freed by autograd.grad.
+        lm_loss_prev = ce_prev.detach()
+        l_lat = _latent_target_loss(
+            hidden_states_old=hidden_states_old,
+            z_mid=z_mid,
+            latent_grad=latent_grad,
+            attention_mask=plateau_kwargs.get("attention_mask"),
+        )
+    else:
+        with torch.no_grad():
+            logits_old = combined_model.decoder(hidden_states=hidden_states_old, **plateau_kwargs)
+            shift_logits_old = logits_old[:, :-1, :].contiguous()
+            lm_loss_prev = F.cross_entropy(
+                shift_logits_old.view(-1, shift_logits_old.size(-1)),
+                shift_labels.view(-1),
+                ignore_index=-100,
+            )
+
     lm_loss = F.cross_entropy(
         shift_logits.view(-1, shift_logits.size(-1)),
         shift_labels.view(-1),
@@ -517,7 +580,10 @@ def _compute_supervision_loss(
     q_loss = F.binary_cross_entropy_with_logits(q_logit, target_q)
 
     loss = lm_loss + cfg.beta * loss_mono + q_loss
-    return loss, token_acc, q_hat, hidden_states, lm_loss, q_loss
+    if use_latent_target:
+        loss = loss + cfg.gamma_lat * l_lat
+        return loss, token_acc, q_hat, hidden_states, lm_loss, q_loss, float(l_lat.detach())
+    return loss, token_acc, q_hat, hidden_states, lm_loss, q_loss, 0.0
 
 
 def _save_eval_responses(
@@ -951,6 +1017,7 @@ def _build_train_log_record(
         "loss": train_summary["loss"],
         "lm_loss": train_summary["lm_loss"],
         "q_loss": train_summary["q_loss"],
+        "lat_loss": train_summary["lat_loss"],
         "token_acc": train_summary["token_acc"],
         "q_hat_mean": train_summary["q_hat"],
         "lr": current_lr,
@@ -1327,7 +1394,7 @@ def train_with_deep_supervision(
                 for n_step in range(cfg.n_reasoning_steps):
                     if n_step in supervised_set:
                         with accelerator.accumulate(combined_model.reasoning, combined_model.q_head):
-                            loss, token_acc, q_hat, hidden_states, lm_loss, q_loss = _compute_supervision_loss(
+                            loss, token_acc, q_hat, hidden_states, lm_loss, q_loss, lat_loss = _compute_supervision_loss(
                                 combined_model=combined_model,
                                 hidden_states=hidden_states,
                                 labels=labels,
@@ -1368,6 +1435,7 @@ def train_with_deep_supervision(
                                 q_loss=q_loss.item(),
                                 token_acc=token_acc,
                                 q_hat=q_hat.mean().item(),
+                                lat_loss=lat_loss,
                             )
                         sup_idx += 1
                     else:
@@ -1387,6 +1455,7 @@ def train_with_deep_supervision(
                     q_loss=q_loss.item(),
                     token_acc=token_acc,
                     q_hat=q_hat.mean().item(),
+                    lat_loss=lat_loss,
                 )
                 running.update(
                     loss=loss.item(),
@@ -1394,6 +1463,7 @@ def train_with_deep_supervision(
                     q_loss=q_loss.item(),
                     token_acc=token_acc,
                     q_hat=q_hat.mean().item(),
+                    lat_loss=lat_loss,
                 )
 
                 _run_periodic_tasks(

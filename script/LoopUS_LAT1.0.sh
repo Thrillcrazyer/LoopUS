@@ -1,0 +1,14 @@
+CUDA_VISIBLE_DEVICES=3 uv run LoopUS-train \
+    --from-hub Thrillcrazyer/Qwen3_1.7B_LoopUS \
+    --train-dataset HuggingFaceFW/fineweb-edu \
+    --train-config CC-MAIN-2025-26 \
+    --train-split train \
+    --train-max-tokens 1000000000 \
+    --batch-size 2 \
+    --gradient-accumulation-steps 5 \
+    --learning-rate 5e-5 \
+    --max-length 1024 \
+    --n-supervision 5 --n-reasoning-steps 20 --encoder-layers 0..1 --decoder-layers 27..27 \
+    --log-interval 10 --warmup-steps 20 --eval-interval 0 --wandb \
+    --checkpoint-dir checkpoints/LoopUS_LAT1.0 \
+    --noise-std 0.0 --init-noise-std 0.0 --gamma-lat 1.0

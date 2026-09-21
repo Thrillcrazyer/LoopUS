@@ -93,6 +93,12 @@ def build_train_arg_parser(defaults: TrainCliDefaults) -> argparse.ArgumentParse
         help="Weight for the hidden-state/gradient alignment penalty",
     )
     parser.add_argument(
+        "--gamma-lat",
+        type=float,
+        default=0.0,
+        help="Weight for the latent-direction alignment loss (L_lat); 0 disables it",
+    )
+    parser.add_argument(
         "--noise-std",
         type=float,
         default=0.0,
