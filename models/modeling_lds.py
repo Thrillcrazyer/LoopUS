@@ -134,6 +134,40 @@ def _unwrap_layer_output(output):
     return output
 
 
+def _pool_last_valid_token(
+    hidden_states: torch.Tensor,
+    attention_mask: Optional[torch.Tensor],
+    cache_position: Optional[torch.LongTensor] = None,
+) -> torch.Tensor:
+    """Pool the last valid token in the current query, including cached chunks.
+
+    A 2-D mask uses nonzero for valid tokens; a 4-D attention mask uses
+    True (boolean) or zero (additive) for allowed attention. All-masked
+    rows fall back to the first query token, as in the training path.
+    """
+    if attention_mask is None:
+        return hidden_states[:, -1, :]
+    mask = attention_mask.to(hidden_states.device)
+    if mask.dim() == 4:
+        allowed = mask if mask.dtype == torch.bool else mask == 0
+        token_mask = allowed.any(dim=1).any(dim=1)
+    elif mask.dim() == 2:
+        token_mask = mask != 0
+    else:
+        raise ValueError("Q pooling requires a 2-D padding or 4-D attention mask")
+
+    query_length = hidden_states.size(1)
+    if cache_position is not None:
+        token_mask = token_mask.index_select(1, cache_position.to(hidden_states.device))
+    else:
+        # Without explicit positions, cached queries are the trailing tokens.
+        token_mask = token_mask[:, -query_length:]
+    positions = torch.arange(query_length, device=hidden_states.device)
+    last_valid_idx = positions.expand_as(token_mask).masked_fill(~token_mask, -1).amax(dim=1).clamp(min=0)
+    batch_idx = torch.arange(hidden_states.size(0), device=hidden_states.device)
+    return hidden_states[batch_idx, last_valid_idx, :]
+
+
 def _first_parameter_dtype(*modules: Optional[nn.Module]) -> Optional[torch.dtype]:
     for module in modules:
         if module is None:
@@ -439,23 +473,10 @@ class ReasoningBlock(nn.Module):
             return (hidden_states, past_key_values) if use_cache else hidden_states
 
         # Pool the pre-gate delta so q evaluates the state change.
-        if attention_mask is not None:
-            token_mask = attention_mask
-            if token_mask.dim() == 4:
-                token_mask = token_mask[:, 0, 0, :]
-            token_mask = token_mask.to(q_hidden_states.device)
-            if token_mask.dtype != torch.bool:
-                token_mask = token_mask != 0
-
-            last_valid_idx = token_mask.long().sum(dim=1).clamp(min=1) - 1
-            batch_idx = torch.arange(q_hidden_states.size(0), device=q_hidden_states.device)
-            pooled = q_hidden_states[batch_idx, last_valid_idx, :]
-        else:
-            pooled = q_hidden_states[:, -1, :]
-
-        q_params = list(q_head.parameters())
-        if q_params:
-            pooled = pooled.to(dtype=q_params[0].dtype)
+        pooled = _pool_last_valid_token(q_hidden_states, attention_mask, cache_position)
+        q_param = next(q_head.parameters(), None)
+        if q_param is not None:
+            pooled = pooled.to(device=q_param.device, dtype=q_param.dtype)
         q_logit = q_head(pooled).squeeze(-1)
         if use_cache:
             return hidden_states, q_logit, past_key_values
@@ -1049,7 +1070,6 @@ class LDSForCausalLM(nn.Module, GenerationMixin):
                 hidden_states=hidden_states,
             )
 
-            q_head_dtype = _first_parameter_dtype(self.q_head)
             q_eval_interval = max(1, int(self.q_eval_interval))
             executed_reasoning_steps = 0
             q_evaluations = 0
@@ -1080,17 +1100,27 @@ class LDSForCausalLM(nn.Module, GenerationMixin):
                 if halting_strategy == "convergence":
                     prev_hidden_last = hidden_states[:, -1, :].detach().clone()
 
+                should_evaluate_q = halting_strategy != "convergence" and (
+                    ((recursion_idx + 1) % q_eval_interval == 0) or (recursion_idx == self.N - 1)
+                )
                 reasoning_output = self.reasoning(
                     hidden_states=hidden_states,
+                    q_head=self.q_head if should_evaluate_q else None,
                     past_key_values=past_key_values["reasoning"][recursion_idx] if past_key_values is not None else None,
                     use_cache=use_cache,
                     **reasoning_kwargs,
                 )
                 if use_cache:
-                    next_hidden_states, current_reasoning_past = reasoning_output
+                    if should_evaluate_q:
+                        next_hidden_states, q_logit, current_reasoning_past = reasoning_output
+                    else:
+                        next_hidden_states, current_reasoning_past = reasoning_output
                     next_reasoning_past.append(current_reasoning_past)
                 else:
-                    next_hidden_states = reasoning_output
+                    if should_evaluate_q:
+                        next_hidden_states, q_logit = reasoning_output
+                    else:
+                        next_hidden_states = reasoning_output
 
                 if samplewise_halting:
                     hidden_states = torch.where(
@@ -1128,22 +1158,11 @@ class LDSForCausalLM(nn.Module, GenerationMixin):
                             break
                     continue
 
-                should_evaluate_q = ((recursion_idx + 1) % q_eval_interval == 0) or (recursion_idx == self.N - 1)
                 if not should_evaluate_q:
                     continue
 
                 q_evaluations += 1
-                q_input = hidden_states[:, -1, :]
-                q_head_device = None
-                try:
-                    q_head_device = next(self.q_head.parameters()).device
-                except StopIteration:
-                    q_head_device = None
-                if q_head_device is not None and q_input.device != q_head_device:
-                    q_input = q_input.to(q_head_device)
-                if q_head_dtype is not None and q_input.dtype != q_head_dtype:
-                    q_input = q_input.to(dtype=q_head_dtype)
-                q_val = torch.sigmoid(self.q_head(q_input).squeeze(-1))
+                q_val = torch.sigmoid(q_logit)
                 if q_val.device != hidden_states.device:
                     q_val = q_val.to(hidden_states.device)
 
