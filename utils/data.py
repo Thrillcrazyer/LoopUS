@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 import itertools
+from pathlib import Path
 from typing import Callable
 
 import torch
-from datasets import load_dataset
+from datasets import Dataset, DatasetDict, load_dataset, load_from_disk
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 from transformers import PreTrainedTokenizer
+
+
+def _load_local_dataset(dataset_name: str, split: str):
+    """Load saved Arrow data without contacting the Hub."""
+    path = Path(dataset_name)
+    if not path.is_dir():
+        return None
+    dataset = load_from_disk(str(path))
+    if isinstance(dataset, DatasetDict):
+        dataset = dataset[split]
+    return dataset
 
 
 def _ensure_pad_token(tokenizer: PreTrainedTokenizer) -> None:
@@ -191,6 +203,18 @@ class _BaseStreamingDataset(IterableDataset):
         _ensure_pad_token(tokenizer)
 
     def _open_stream(self):
+        local = _load_local_dataset(self.dataset_name, self.split)
+        if local is not None:
+            start = min(self.skip_samples, len(local))
+            end = len(local)
+            if self.max_samples and self.max_samples > 0:
+                end = min(end, start + self.max_samples)
+            local = local.select(range(start, end))
+            if self.shuffle_buffer and self.shuffle_buffer > 1:
+                local = local.shuffle(seed=self.seed)
+            # Keep a map-style dataset: HF iterable datasets perform their own
+            # worker sharding, which would duplicate our _iter_stream sharding.
+            return local
         load_kwargs: dict = {"split": self.split, "streaming": True}
         if self.config:
             load_kwargs["name"] = self.config
@@ -209,6 +233,8 @@ class _BaseStreamingDataset(IterableDataset):
         worker = get_worker_info()
         if worker is None:
             return iter(dataset)
+        if isinstance(dataset, Dataset):
+            return iter(dataset.shard(worker.num_workers, worker.id, contiguous=False))
         return itertools.islice(dataset, worker.id, None, worker.num_workers)
 
     def _convert_example(
@@ -307,9 +333,17 @@ def _estimate_split_sizes(
     train_alignment_samples: int = 1,
 ) -> tuple[int, int]:
     """Estimate train/eval sizes from an explicit budget or dataset metadata."""
+    local = _load_local_dataset(dataset_name, split)
+    if local is not None:
+        total = len(local)
+        if total == 0:
+            raise ValueError(f"Local dataset is empty: {dataset_name}")
+        max_samples = min(max_samples, total) if max_samples > 0 else total
     if max_samples and max_samples > 0:
         n_eval = max(1, int(max_samples * val_ratio)) if val_ratio > 0 else 0
         n_train = max_samples - n_eval
+        if local is not None and n_train <= 0:
+            raise ValueError("Local dataset has no training rows after the validation split.")
         if train_alignment_samples > 1 and n_train >= train_alignment_samples:
             n_train = (n_train // train_alignment_samples) * train_alignment_samples
         return n_train, n_eval

@@ -73,6 +73,51 @@ uv run LoopUS-train \
 
 For a configurable template suitable for cluster jobs, see `script/train.sh`.
 
+#### Download first, then train from local files
+
+The shell template uses `script/data_config.sh` for model, dataset, sample/token
+budgets, sequence length, and local download paths. Its defaults are
+`Qwen/Qwen3-4B` and `HuggingFaceFW/fineweb-edu` / `CC-MAIN-2025-26` / `train`.
+
+```bash
+# 1. Download model weights/tokenizer and materialize the training data.
+bash script/download.sh
+
+# 2. Validate the prepared files and launch training using local paths.
+bash script/train.sh
+```
+
+Files are stored under `downloads/` (excluded from Git). Existing completed
+downloads are reused. If dataset settings change, use a new `LOCAL_DATASET_DIR`
+or move the old directory before downloading again. Incomplete dataset downloads
+are not published as ready; rerun the download command after a failure.
+
+The downloader saves the first `TRAIN_MAX_TOKENS // MAX_LENGTH` raw examples,
+matching the training code's approximate token budget. With the defaults this is
+2,929,687 examples, including the later validation split; it is not an exact count
+of non-padding tokens. If `TRAIN_MAX_TOKENS <= 0`, `TRAIN_MAX_SAMPLES` controls the
+download; setting both budgets to zero or negative downloads the entire split.
+Data is written to disk incrementally, and preparation temporarily needs space
+for both its Arrow cache and final saved dataset. Tokenization happens during
+training. Local datasets use a seeded full shuffle; remote streams retain their
+buffer shuffle.
+
+You can override shared settings through environment variables. Use the same
+overrides for both commands, or edit `script/data_config.sh` once:
+
+```bash
+export DOWNLOAD_DIR=/mnt/training-assets
+bash script/download.sh
+bash script/train.sh
+```
+
+Direct Python/CLI training commands still accept Hub IDs. To use prepared data,
+pass the local model directory to `--model-name` and the saved dataset directory
+to `--train-dataset`; this also works with `train_sft.py`. W&B, Hub uploads, and
+optional lm-eval benchmarks may still use the network (benchmark datasets are
+not prepared by this download script). For multiple nodes, make the prepared
+directories available at the same path on every node.
+
 ### 2. Supervised Fine-Tuning
 
 ```bash

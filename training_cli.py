@@ -23,8 +23,10 @@ def build_train_arg_parser(defaults: TrainCliDefaults) -> argparse.ArgumentParse
     """Build the shared training parser with entrypoint-specific defaults."""
     parser = argparse.ArgumentParser(description=defaults.description)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--model-name", type=str, default="Qwen/Qwen3-0.6B")
-    parser.add_argument("--train-dataset", type=str, default="HuggingFaceH4/ultrachat_200k")
+    parser.add_argument("--model-name", type=str, default="Qwen/Qwen3-0.6B",
+                        help="Hub model ID or local model directory")
+    parser.add_argument("--train-dataset", type=str, default="HuggingFaceH4/ultrachat_200k",
+                        help="Hub dataset ID or local Dataset.save_to_disk directory")
     parser.add_argument(
         "--train-config",
         type=str,

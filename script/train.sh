@@ -3,26 +3,26 @@ set -euo pipefail
 
 # Reproducible public training template for DDD.
 
+PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$PROJECT_ROOT"
+source "$PROJECT_ROOT/script/data_config.sh"
+
+# Validate downloads before starting distributed workers.
+uv run python download.py "${DOWNLOAD_ARGS[@]}" --check-only
+
 ##### 요게 수정해야 함. (NVLINK 되는 모델(H100,B200) 이런거면 이 3줄 지우면됨 ㅇㅇ)
 export NCCL_P2P_DISABLE=0
 export NCCL_IB_DISABLE=0
 export TORCH_NCCL_BLOCKING_WAIT=0
 export CUDA_VISIBLE_DEVICES=0,1,2
 
-MODEL_NAME="Qwen/Qwen3-4B"
 ENCODER_LAYERS="0..0"
 DECODER_LAYERS="35..35"
-
-TRAIN_DATASET="HuggingFaceFW/fineweb-edu"
-TRAIN_CONFIG="CC-MAIN-2025-26"
-TRAIN_SPLIT="train"
-TRAIN_MAX_TOKENS=3000000000
 
 EPOCHS=1
 BATCH_SIZE=4
 GRADIENT_ACCUMULATION_STEPS=32
 LEARNING_RATE=5e-5
-MAX_LENGTH=1024
 SEED=2026
 
 N_SUPERVISION=20
@@ -81,11 +81,12 @@ CMD+=(--num_processes 3)
 CMD+=(
     train.py
     --seed "$SEED"
-    --model-name "$MODEL_NAME"
-    --train-dataset "$TRAIN_DATASET"
+    --model-name "$LOCAL_MODEL_DIR"
+    --train-dataset "$LOCAL_DATASET_DIR"
     --train-config "$TRAIN_CONFIG"
     --train-split "$TRAIN_SPLIT"
     --train-max-tokens "$TRAIN_MAX_TOKENS"
+    --train-max-samples "$TRAIN_MAX_SAMPLES"
     --batch-size "$BATCH_SIZE"
     --epochs "$EPOCHS"
     --learning-rate "$LEARNING_RATE"

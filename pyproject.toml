@@ -33,6 +33,7 @@ LoopUS-generate = "generate:main"
 
 [tool.setuptools]
 py-modules = [
+    "download",
     "evaluate",
     "generate",
     "train",
